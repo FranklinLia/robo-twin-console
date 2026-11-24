@@ -4,15 +4,23 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "tsx server.ts",
     "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "NODE_ENV=production tsx server.ts"
   },
   "dependencies": {
+    "@google/genai": "^3.6.1",
+    "@types/express": "^5.0.6",
     "@types/three": "^0.187.0",
+    "@types/ws": "^8.18.2",
+    "express": "^5.3.0",
+    "pinia": "^4.1.0",
     "three": "^0.187.0",
+    "tsx": "^4.23.15",
     "urdf-loader": "^0.13.1",
-    "vue": "^3.5.44"
+    "vue": "^3.5.44",
+    "ws": "^8.23.0"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

@@ -1,0 +1,237 @@
+<?xml version="1.0"?>
+<robot name="ur5_6dof">
+  <!-- Materials -->
+  <material name="dark_metal">
+    <color rgba="0.18 0.22 0.28 1.0"/>
+  </material>
+  <material name="titanium_grey">
+    <color rgba="0.58 0.63 0.70 1.0"/>
+  </material>
+  <material name="ur_blue">
+    <color rgba="0.06 0.52 0.82 1.0"/>
+  </material>
+  <material name="steel_collar">
+    <color rgba="0.32 0.37 0.44 1.0"/>
+  </material>
+  <material name="accent_amber">
+    <color rgba="0.96 0.62 0.04 1.0"/>
+  </material>
+
+  <!-- Base Link -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.025" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.11" length="0.05"/>
+      </geometry>
+      <material name="dark_metal"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.065" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.082" length="0.03"/>
+      </geometry>
+      <material name="steel_collar"/>
+    </visual>
+  </link>
+
+  <!-- Joint 1: Shoulder Pan (Z axis) -->
+  <joint name="shoulder_pan_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="shoulder_link"/>
+    <origin xyz="0 0 0.08" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.1416" upper="3.1416" effort="150.0" velocity="3.15"/>
+  </joint>
+
+  <link name="shoulder_link">
+    <visual>
+      <origin xyz="0 0 0.055" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.072" length="0.11"/>
+      </geometry>
+      <material name="titanium_grey"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.112" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.062" length="0.02"/>
+      </geometry>
+      <material name="ur_blue"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0.048 0.08" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.056" length="0.095"/>
+      </geometry>
+      <material name="steel_collar"/>
+    </visual>
+  </link>
+
+  <!-- Joint 2: Shoulder Lift (Y axis) -->
+  <joint name="shoulder_lift_joint" type="revolute">
+    <parent link="shoulder_link"/>
+    <child link="upper_arm_link"/>
+    <origin xyz="0 0.115 0.08" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.3562" upper="2.3562" effort="150.0" velocity="3.15"/>
+  </joint>
+
+  <link name="upper_arm_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.056" length="0.09"/>
+      </geometry>
+      <material name="ur_blue"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.2125" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.043" length="0.425"/>
+      </geometry>
+      <material name="titanium_grey"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.425" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.052" length="0.092"/>
+      </geometry>
+      <material name="steel_collar"/>
+    </visual>
+  </link>
+
+  <!-- Joint 3: Elbow (Y axis) -->
+  <joint name="elbow_joint" type="revolute">
+    <parent link="upper_arm_link"/>
+    <child link="forearm_link"/>
+    <origin xyz="0 -0.095 0.425" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.6180" upper="2.6180" effort="150.0" velocity="3.15"/>
+  </joint>
+
+  <link name="forearm_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.048" length="0.084"/>
+      </geometry>
+      <material name="ur_blue"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.195" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.036" length="0.39"/>
+      </geometry>
+      <material name="titanium_grey"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.39" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.042" length="0.084"/>
+      </geometry>
+      <material name="steel_collar"/>
+    </visual>
+  </link>
+
+  <!-- Joint 4: Wrist 1 (Y axis) -->
+  <joint name="wrist_1_joint" type="revolute">
+    <parent link="forearm_link"/>
+    <child link="wrist_1_link"/>
+    <origin xyz="0 0.088 0.39" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.1416" upper="3.1416" effort="28.0" velocity="3.2"/>
+  </joint>
+
+  <link name="wrist_1_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.038" length="0.076"/>
+      </geometry>
+      <material name="ur_blue"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.048" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.032" length="0.096"/>
+      </geometry>
+      <material name="titanium_grey"/>
+    </visual>
+  </link>
+
+  <!-- Joint 5: Wrist 2 (Z axis) -->
+  <joint name="wrist_2_joint" type="revolute">
+    <parent link="wrist_1_link"/>
+    <child link="wrist_2_link"/>
+    <origin xyz="0 0 0.096" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.1416" upper="3.1416" effort="28.0" velocity="3.2"/>
+  </joint>
+
+  <link name="wrist_2_link">
+    <visual>
+      <origin xyz="0 0 0.042" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.034" length="0.084"/>
+      </geometry>
+      <material name="steel_collar"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0.025 0.065" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.032" length="0.078"/>
+      </geometry>
+      <material name="titanium_grey"/>
+    </visual>
+  </link>
+
+  <!-- Joint 6: Wrist 3 (Y axis, Tool Flange & Parallel Gripper) -->
+  <joint name="wrist_3_joint" type="revolute">
+    <parent link="wrist_2_link"/>
+    <child link="wrist_3_link"/>
+    <origin xyz="0 0.072 0.065" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.1416" upper="3.1416" effort="28.0" velocity="3.2"/>
+  </joint>
+
+  <link name="wrist_3_link">
+    <visual>
+      <origin xyz="0 0.012 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="0.031" length="0.024"/>
+      </geometry>
+      <material name="ur_blue"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0.036 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.068 0.024 0.036"/>
+      </geometry>
+      <material name="dark_metal"/>
+    </visual>
+    <visual>
+      <origin xyz="-0.024 0.068 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.010 0.046 0.020"/>
+      </geometry>
+      <material name="accent_amber"/>
+    </visual>
+    <visual>
+      <origin xyz="0.024 0.068 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.010 0.046 0.020"/>
+      </geometry>
+      <material name="accent_amber"/>
+    </visual>
+  </link>
+
+  <!-- Fixed End-Effector Reference Frame -->
+  <joint name="tool0_fixed" type="fixed">
+    <parent link="wrist_3_link"/>
+    <child link="tool0"/>
+    <origin xyz="0 0.091 0" rpy="-1.5708 0 0"/>
+  </joint>
+
+  <link name="tool0"/>
+</robot>
