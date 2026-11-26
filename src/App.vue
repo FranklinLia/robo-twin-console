@@ -56,7 +56,7 @@ const handleGlobalKeydown = (event: KeyboardEvent) => {
 onMounted(() => {
   robotStore.initTheme();
   void robotStore.syncServerStatus();
-  void robotStore.switchDataSource('WS_STREAM');
+  void robotStore.setStress100Hz(true);
   window.addEventListener('keydown', handleGlobalKeydown);
 });
 

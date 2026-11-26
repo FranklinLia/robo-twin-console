@@ -6,6 +6,7 @@ const robotStore = useRobotStore();
 const {
   connectionStatus,
   dataSourceMode,
+  stress100HzEnabled,
   modelName,
   modelMode,
   joints,
@@ -26,7 +27,13 @@ const {
     <div class="status-group">
       <span class="conn-pill" :data-status="connectionStatus">
         <span class="conn-dot"></span>
-        {{ connectionStatus === 'LOCAL_SIM' ? 'LOCAL SIM' : connectionStatus }}
+        {{
+          connectionStatus === 'LOCAL_SIM'
+            ? stress100HzEnabled
+              ? 'LOCAL 100Hz'
+              : 'LOCAL SIM'
+            : connectionStatus
+        }}
       </span>
       <span class="divider">|</span>
       <span class="model-pill" :data-mode="modelMode">
@@ -63,7 +70,9 @@ const {
         <strong>
           {{
             dataSourceMode === 'LOCAL_SIM'
-              ? 'MANUAL'
+              ? stress100HzEnabled
+                ? `${telemetryHz} Hz`
+                : 'MANUAL'
               : connectionStatus === 'ONLINE'
                 ? `${telemetryHz} Hz`
                 : '0 Hz'

@@ -23,7 +23,7 @@ export class TelemetryRingBuffer {
     this.series = Array.from({ length: channelCount }, () => new Float32Array(capacity));
   }
 
-  push(timestamp: number, angles: number[]): void {
+  push(timestamp: number, angles: ArrayLike<number>): void {
     this.timestamps[this.head] = timestamp;
     for (let ch = 0; ch < this.channelCount; ch++) {
       this.series[ch][this.head] = angles[ch] ?? 0;

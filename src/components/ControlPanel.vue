@@ -1,7 +1,24 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
+import { computeForwardKinematics } from '../services/kinematics';
 import { useRobotStore } from '../stores/robot';
+import type { EndEffectorPose, JointAlarm } from '../types/robot';
+
+interface PanelJointView {
+  name: string;
+  urdfName: string;
+  label: string;
+  angle: number;
+  min: number;
+  max: number;
+  velocity: number;
+  effort: number;
+  temperature: number;
+  alarm: JointAlarm | null;
+}
+
+const PANEL_REFRESH_MS = 100; // 10Hz 刷新节流
 
 const robotStore = useRobotStore();
 const {
@@ -10,6 +27,9 @@ const {
   dataSourceMode,
   motionMode,
   wsServerRunning,
+  stress100HzEnabled,
+  stressFrameCount,
+  telemetryHz,
   modelMode,
   isHomePose,
   activeAlarms,
@@ -37,6 +57,67 @@ const {
 
 const activeTab = ref<'JOINTS' | 'KINEMATICS' | 'AGENT'>('JOINTS');
 const promptInput = ref<string>('抓取红色工件放到 A 号料盘');
+const draggingJointName = ref<string | null>(null);
+
+const panelJoints = ref<PanelJointView[]>(
+  joints.value.map((j) => ({
+    name: j.name,
+    urdfName: j.urdfName,
+    label: j.label,
+    angle: j.angle,
+    min: j.min,
+    max: j.max,
+    velocity: j.velocity,
+    effort: j.effort,
+    temperature: j.temperature,
+    alarm: j.alarm,
+  }))
+);
+const panelPose = ref<EndEffectorPose>(endEffectorPose.value);
+const panelFkErrorMm = ref<number | null>(fkWorldErrorMm.value);
+
+const angleScratch = new Array<number>(joints.value.length).fill(0);
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+const refreshPanelNumbers = () => {
+  const angles = robotStore.targetAngles;
+  const velocities = robotStore.targetVelocities;
+  const efforts = robotStore.targetEfforts;
+  const temperatures = robotStore.targetTemperatures;
+  const storeJoints = joints.value;
+
+  for (let i = 0; i < panelJoints.value.length; i++) {
+    const view = panelJoints.value[i];
+    const storeItem = storeJoints[i];
+    const nextAngle = angles[i] ?? storeItem.angle;
+    angleScratch[i] = nextAngle;
+
+    if (draggingJointName.value !== view.name) {
+      view.angle = nextAngle;
+    }
+    view.velocity = velocities[i] ?? storeItem.velocity;
+    view.effort = efforts[i] ?? storeItem.effort;
+    view.temperature = temperatures[i] ?? storeItem.temperature;
+    view.alarm = storeItem.alarm;
+  }
+
+  panelPose.value = computeForwardKinematics(angleScratch);
+  panelFkErrorMm.value = fkWorldErrorMm.value;
+};
+
+onMounted(() => {
+  refreshPanelNumbers();
+  refreshTimer = setInterval(refreshPanelNumbers, PANEL_REFRESH_MS);
+  window.addEventListener('pointerup', onSliderDragEnd);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pointerup', onSliderDragEnd);
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+});
 
 const QUICK_PROMPTS = [
   '移动到 home 位姿',
@@ -52,6 +133,10 @@ const toDeg = (rad: number) => (rad * (180 / Math.PI)).toFixed(1);
 const onSliderInput = (name: string, event: Event) => {
   const value = Number((event.target as HTMLInputElement).value);
   robotStore.setJointAngle(name, value);
+};
+
+const onSliderDragEnd = () => {
+  draggingJointName.value = null;
 };
 
 const onScrubInput = (event: Event) => {
@@ -144,11 +229,37 @@ const applyQuickPrompt = (text: string) => {
             {{ wsServerRunning ? '停止 WS 服务' : '重启 WS 服务' }}
           </button>
         </div>
+
+        <div class="stress-card" :class="{ active: stress100HzEnabled }">
+          <div class="stress-header">
+            <div class="stress-title-group">
+              <span class="stress-title">本地 100Hz 高频数据推送</span>
+              <span class="stress-sub">
+                {{
+                  stress100HzEnabled
+                    ? `压测中 · ${telemetryHz} Hz · 累计 ${stressFrameCount} 帧 · UI 10Hz 节流`
+                    : '用于压测 Float64Array + MotionBuffer 60FPS 插值'
+                }}
+              </span>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              :aria-checked="stress100HzEnabled"
+              class="stress-switch"
+              :class="{ on: stress100HzEnabled }"
+              @click="robotStore.toggleStress100Hz()"
+            >
+              <span class="stress-thumb"></span>
+              <span class="stress-state">{{ stress100HzEnabled ? 'ON' : 'OFF' }}</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="joint-list">
         <div
-          v-for="joint in joints"
+          v-for="joint in panelJoints"
           :key="joint.name"
           class="joint-item"
           :class="{
@@ -167,10 +278,13 @@ const applyQuickPrompt = (text: string) => {
 
           <input
             type="range"
-            :value="joint.angle"
+            :value="draggingJointName === joint.name ? undefined : joint.angle"
             :min="joint.min"
             :max="joint.max"
             step="0.01"
+            @pointerdown.stop="draggingJointName = joint.name"
+            @pointerup="onSliderDragEnd"
+            @change="onSliderDragEnd"
             @input="onSliderInput(joint.name, $event)"
             @click.stop
           />
@@ -196,28 +310,28 @@ const applyQuickPrompt = (text: string) => {
       <div class="kin-card">
         <div class="card-title">
           <span>正运动学 FK 末端位姿</span>
-          <span v-if="fkWorldErrorMm !== null && modelMode === 'URDF'" class="ok-chip">
-            Δ {{ fkWorldErrorMm.toFixed(3) }}mm
+          <span v-if="panelFkErrorMm !== null && modelMode === 'URDF'" class="ok-chip">
+            Δ {{ panelFkErrorMm.toFixed(3) }}mm
           </span>
         </div>
         <div class="pose-table">
           <span>Three (Y-up)</span>
           <code>
-            ({{ endEffectorPose.threePosition[0].toFixed(3) }},
-            {{ endEffectorPose.threePosition[1].toFixed(3) }},
-            {{ endEffectorPose.threePosition[2].toFixed(3) }}) m
+            ({{ panelPose.threePosition[0].toFixed(3) }},
+            {{ panelPose.threePosition[1].toFixed(3) }},
+            {{ panelPose.threePosition[2].toFixed(3) }}) m
           </code>
           <span>ROS (Z-up)</span>
           <code>
-            ({{ endEffectorPose.rosPosition[0].toFixed(3) }},
-            {{ endEffectorPose.rosPosition[1].toFixed(3) }},
-            {{ endEffectorPose.rosPosition[2].toFixed(3) }}) m
+            ({{ panelPose.rosPosition[0].toFixed(3) }},
+            {{ panelPose.rosPosition[1].toFixed(3) }},
+            {{ panelPose.rosPosition[2].toFixed(3) }}) m
           </code>
           <span>R / P / Y</span>
           <code>
-            ({{ endEffectorPose.rpyDeg[0].toFixed(1) }}°,
-            {{ endEffectorPose.rpyDeg[1].toFixed(1) }}°,
-            {{ endEffectorPose.rpyDeg[2].toFixed(1) }}°)
+            ({{ panelPose.rpyDeg[0].toFixed(1) }}°,
+            {{ panelPose.rpyDeg[1].toFixed(1) }}°,
+            {{ panelPose.rpyDeg[2].toFixed(1) }}°)
           </code>
         </div>
       </div>
@@ -599,6 +713,81 @@ const applyQuickPrompt = (text: string) => {
 .sub-btn.recover {
   color: var(--status-ok-fg);
   border-color: rgba(52, 211, 153, 0.5);
+}
+
+.stress-card {
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.stress-card.active {
+  border-color: rgba(245, 158, 11, 0.65);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.stress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stress-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stress-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.stress-card.active .stress-title {
+  color: var(--status-warn-fg);
+}
+
+.stress-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stress-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px 3px 4px;
+  border-radius: 5px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card-inner);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.stress-switch.on {
+  border-color: var(--status-warn-fg);
+  background: var(--status-warn-bg);
+  color: var(--status-warn-fg);
+}
+
+.stress-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: currentColor;
+  opacity: 0.85;
 }
 
 .joint-list {

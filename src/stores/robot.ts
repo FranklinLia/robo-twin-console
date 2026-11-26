@@ -6,6 +6,7 @@ import {
   UR5_JOINT_MAPPING,
 } from '../config/jointMapping';
 import { createInitialSceneObjects } from '../config/sceneObjects';
+import { sharedMotionBuffer } from '../core/MotionBuffer';
 import { validateAndCompileActions } from '../services/actionPlanner';
 import {
   computeForwardKinematics,
@@ -49,6 +50,14 @@ const TEMP_CRIT_THRESHOLD = 80;
 const LIMIT_MARGIN_RAD = 0.02;
 const MAX_ALARM_LOGS = 80;
 const MAX_EXEC_LOGS = 60;
+const UI_SYNC_INTERVAL_MS = 100; // 10Hz
+
+const JOINT_COUNT = UR5_JOINT_MAPPING.length;
+const JOINT_INDEX_BY_NAME = new Map<string, number>();
+UR5_JOINT_MAPPING.forEach((entry, idx) => {
+  JOINT_INDEX_BY_NAME.set(entry.storeJointName, idx);
+  JOINT_INDEX_BY_NAME.set(entry.urdfJointName, idx);
+});
 
 const createInitialJoints = (): JointState[] =>
   UR5_JOINT_MAPPING.map((entry) => ({
@@ -68,11 +77,32 @@ const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 
 export const useRobotStore = defineStore('robot', () => {
+  // 定长类型化数组存储高频关节目标弧度与遥测物理量（消除高频更新时的 GC 开销）
+  const targetAngles = new Float64Array(JOINT_COUNT);
+  const targetVelocities = new Float64Array(JOINT_COUNT);
+  const targetEfforts = new Float64Array(JOINT_COUNT);
+  const targetTemperatures = new Float64Array(JOINT_COUNT);
+
+  UR5_JOINT_MAPPING.forEach((entry, idx) => {
+    targetAngles[idx] = entry.defaultAngle;
+    targetVelocities[idx] = 0;
+    targetEfforts[idx] = entry.defaultEffort;
+    targetTemperatures[idx] = entry.defaultTemperature;
+  });
+
+  if (sharedMotionBuffer.getCount() === 0) {
+    sharedMotionBuffer.push(targetAngles);
+  }
+
   const joints = ref<JointState[]>(createInitialJoints());
+  let lastReactiveSyncAt = 0;
+  let pendingReactiveSyncTimer: ReturnType<typeof setTimeout> | null = null;
   const connectionStatus = ref<ConnectionStatus>('LOCAL_SIM');
   const dataSourceMode = ref<DataSourceMode>('WS_STREAM');
   const motionMode = ref<ServerMotionMode>('WAVE_DEMO');
   const wsServerRunning = ref<boolean>(true);
+  const stress100HzEnabled = ref<boolean>(false);
+  const stressFrameCount = ref<number>(0);
 
   const modelName = ref<string>(DEFAULT_URDF_MODEL_NAME);
   const modelMode = ref<ModelSourceMode>('URDF');
@@ -309,60 +339,96 @@ export const useRobotStore = defineStore('robot', () => {
     lastJointAlarmCodes.set(joint.name, nextCode);
   };
 
-  // Actions
-  const setJointAngle = (name: string, angle: number) => {
-    const target = joints.value.find((j) => j.name === name);
-    if (!target) return;
-    target.angle = clamp(angle, target.min, target.max);
-    syncAlarmStateForJoint(target, Date.now());
-
-    if (dataSourceMode.value === 'WS_STREAM') {
-      motionMode.value = 'HOLD';
-      wsSource.sendJointTarget(target.name, target.angle);
-    } else {
-      sharedTelemetryBuffer.push(
-        Date.now(),
-        joints.value.map((j) => j.angle)
-      );
+  const flushTypedStateToReactiveJoints = (now = Date.now()) => {
+    if (pendingReactiveSyncTimer) {
+      clearTimeout(pendingReactiveSyncTimer);
+      pendingReactiveSyncTimer = null;
+    }
+    lastReactiveSyncAt = now;
+    for (let i = 0; i < JOINT_COUNT; i++) {
+      const joint = joints.value[i];
+      joint.angle = targetAngles[i];
+      joint.velocity = targetVelocities[i];
+      joint.effort = targetEfforts[i];
+      joint.temperature = targetTemperatures[i];
+      syncAlarmStateForJoint(joint, now);
+    }
+    if (stress100HzEnabled.value) {
+      stressFrameCount.value = localSource.getTotalFrames();
     }
   };
 
-  const applyJointVector = (angles: number[]) => {
+  const scheduleThrottledReactiveSync = (now = Date.now()) => {
+    const elapsed = now - lastReactiveSyncAt;
+    if (elapsed >= UI_SYNC_INTERVAL_MS) {
+      flushTypedStateToReactiveJoints(now);
+      return;
+    }
+    if (!pendingReactiveSyncTimer) {
+      pendingReactiveSyncTimer = setTimeout(() => {
+        pendingReactiveSyncTimer = null;
+        flushTypedStateToReactiveJoints(Date.now());
+      }, UI_SYNC_INTERVAL_MS - elapsed);
+    }
+  };
+
+  // Actions
+  const setJointAngle = (name: string, angle: number) => {
+    const idx = JOINT_INDEX_BY_NAME.get(name);
+    if (idx === undefined) return;
+    const target = joints.value[idx];
+    const clamped = clamp(angle, target.min, target.max);
+    targetAngles[idx] = clamped;
+
     const now = Date.now();
-    for (let i = 0; i < joints.value.length; i++) {
+    sharedMotionBuffer.push(targetAngles, now);
+
+    if (dataSourceMode.value === 'WS_STREAM') {
+      motionMode.value = 'HOLD';
+      wsSource.sendJointTarget(target.name, clamped);
+    } else {
+      sharedTelemetryBuffer.push(now, targetAngles);
+    }
+    scheduleThrottledReactiveSync(now);
+  };
+
+  const applyJointVector = (angles: ArrayLike<number>) => {
+    const now = Date.now();
+    for (let i = 0; i < JOINT_COUNT; i++) {
       const joint = joints.value[i];
       const nextAngle = clamp(angles[i] ?? 0, joint.min, joint.max);
-      joint.angle = nextAngle;
-      syncAlarmStateForJoint(joint, now);
+      targetAngles[i] = nextAngle;
 
       if (dataSourceMode.value === 'WS_STREAM') {
         wsSource.sendJointTarget(joint.name, nextAngle);
       }
     }
+    sharedMotionBuffer.push(targetAngles, now);
     if (dataSourceMode.value === 'LOCAL_SIM') {
-      sharedTelemetryBuffer.push(
-        now,
-        joints.value.map((j) => j.angle)
-      );
+      sharedTelemetryBuffer.push(now, targetAngles);
     }
+    scheduleThrottledReactiveSync(now);
   };
 
   const resetPose = () => {
+    if (stress100HzEnabled.value) {
+      void setStress100Hz(false);
+    }
     stopTrajectory();
     stopActionExecution();
-    for (const joint of joints.value) {
-      joint.angle = 0;
-      joint.velocity = 0;
-      syncAlarmStateForJoint(joint, Date.now());
+    const now = Date.now();
+    for (let i = 0; i < JOINT_COUNT; i++) {
+      targetAngles[i] = 0;
+      targetVelocities[i] = 0;
     }
+    sharedMotionBuffer.push(targetAngles, now);
+    flushTypedStateToReactiveJoints(now);
+
     if (dataSourceMode.value === 'WS_STREAM') {
       motionMode.value = 'HOLD';
       wsSource.sendHomeCommand();
     } else {
-      sharedTelemetryBuffer.push(
-        Date.now(),
-        joints.value.map((j) => j.angle)
-      );
+      sharedTelemetryBuffer.push(now, targetAngles);
     }
   };
 
@@ -441,6 +507,10 @@ export const useRobotStore = defineStore('robot', () => {
   const disposeStoreTimers = () => {
     clearPlaybackTimer();
     clearActionTimer();
+    if (pendingReactiveSyncTimer) {
+      clearTimeout(pendingReactiveSyncTimer);
+      pendingReactiveSyncTimer = null;
+    }
     activeSource?.disconnect();
   };
 
@@ -507,6 +577,9 @@ export const useRobotStore = defineStore('robot', () => {
   const jumpToWaypoint = (id: string) => {
     const wp = waypoints.value.find((w) => w.id === id);
     if (!wp) return;
+    if (stress100HzEnabled.value) {
+      setStress100Hz(false);
+    }
     stopTrajectory();
     if (dataSourceMode.value === 'WS_STREAM') {
       setServerMotionMode('HOLD');
@@ -530,6 +603,9 @@ export const useRobotStore = defineStore('robot', () => {
     const traj = plannedTrajectory.value;
     if (traj.length < 2) return;
 
+    if (stress100HzEnabled.value) {
+      setStress100Hz(false);
+    }
     if (dataSourceMode.value === 'WS_STREAM' && motionMode.value === 'WAVE_DEMO') {
       setServerMotionMode('HOLD');
     }
@@ -729,6 +805,9 @@ export const useRobotStore = defineStore('robot', () => {
     const steps = compiledActionSteps.value;
     if (traj.length < 2 || steps.length === 0) return;
 
+    if (stress100HzEnabled.value) {
+      setStress100Hz(false);
+    }
     if (dataSourceMode.value === 'WS_STREAM' && motionMode.value === 'WAVE_DEMO') {
       setServerMotionMode('HOLD');
     }
@@ -797,31 +876,28 @@ export const useRobotStore = defineStore('robot', () => {
     }
 
     for (const sample of frame.joints) {
-      const target = joints.value.find(
-        (j) => j.name === sample.name || j.urdfName === sample.name
-      );
-      if (!target) continue;
-      target.angle = clamp(sample.angle, target.min, target.max);
+      const idx = JOINT_INDEX_BY_NAME.get(sample.name);
+      if (idx === undefined) continue;
+      const target = joints.value[idx];
+      targetAngles[idx] = clamp(sample.angle, target.min, target.max);
       if (typeof sample.velocity === 'number') {
-        target.velocity = sample.velocity;
+        targetVelocities[idx] = sample.velocity;
       }
       if (typeof sample.effort === 'number') {
-        target.effort = sample.effort;
+        targetEfforts[idx] = sample.effort;
       }
       if (typeof sample.temperature === 'number') {
-        target.temperature = sample.temperature;
+        targetTemperatures[idx] = sample.temperature;
       }
       if (sample.alarm !== undefined && sample.alarm !== null) {
         target.alarm = sample.alarm;
-      } else {
-        syncAlarmStateForJoint(target, frame.timestamp);
       }
     }
 
-    sharedTelemetryBuffer.push(
-      frame.timestamp,
-      joints.value.map((j) => j.angle)
-    );
+    // 零 GC 直接写入抗抖动运动插值缓冲区与遥测波形缓冲区
+    sharedMotionBuffer.push(targetAngles, frame.timestamp);
+    sharedTelemetryBuffer.push(frame.timestamp, targetAngles);
+    scheduleThrottledReactiveSync(Date.now());
   };
 
   const switchDataSource = async (mode: DataSourceMode) => {
@@ -829,18 +905,51 @@ export const useRobotStore = defineStore('robot', () => {
     unbindStatus?.();
     activeSource?.disconnect();
 
+    if (mode === 'WS_STREAM') {
+      stress100HzEnabled.value = false;
+      localSource.stopHighFreqPush();
+    }
+
     dataSourceMode.value = mode;
     if (mode === 'WS_STREAM') {
       activeSource = wsSource;
     } else {
       activeSource = localSource;
-      telemetryHz.value = 0;
-      latencyMs.value = 0;
+      if (!stress100HzEnabled.value) {
+        telemetryHz.value = 0;
+        latencyMs.value = 0;
+      }
     }
 
     unbindFrame = activeSource.onFrame(applyTelemetryFrame);
     unbindStatus = activeSource.onStatusChange(setConnectionStatus);
     await activeSource.connect();
+  };
+
+  const setStress100Hz = async (enabled: boolean) => {
+    if (enabled) {
+      stress100HzEnabled.value = true;
+      stressFrameCount.value = 0;
+      if (dataSourceMode.value !== 'LOCAL_SIM' || activeSource !== localSource) {
+        await switchDataSource('LOCAL_SIM');
+      }
+      localSource.startHighFreqPush(100);
+      pushAlarmLog('info', 'STRESS_100HZ_ON', 'SYSTEM', '已开启本地 100Hz 高频模拟数据压测推送');
+    } else {
+      const wasEnabled = stress100HzEnabled.value;
+      stress100HzEnabled.value = false;
+      localSource.stopHighFreqPush();
+      if (dataSourceMode.value === 'LOCAL_SIM') {
+        telemetryHz.value = 0;
+      }
+      if (wasEnabled) {
+        pushAlarmLog('info', 'STRESS_100HZ_OFF', 'SYSTEM', '已停止本地 100Hz 高频数据推送');
+      }
+    }
+  };
+
+  const toggleStress100Hz = async () => {
+    await setStress100Hz(!stress100HzEnabled.value);
   };
 
   const setServerMotionMode = (mode: ServerMotionMode) => {
@@ -854,10 +963,10 @@ export const useRobotStore = defineStore('robot', () => {
     if (dataSourceMode.value === 'WS_STREAM') {
       wsSource.injectTemperature(jointName, temperature);
     } else {
-      const target = joints.value.find((j) => j.name === jointName);
-      if (target) {
-        target.temperature = temperature;
-        syncAlarmStateForJoint(target, Date.now());
+      const idx = JOINT_INDEX_BY_NAME.get(jointName);
+      if (idx !== undefined) {
+        targetTemperatures[idx] = temperature;
+        flushTypedStateToReactiveJoints(Date.now());
       }
     }
   };
@@ -866,11 +975,11 @@ export const useRobotStore = defineStore('robot', () => {
     if (dataSourceMode.value === 'WS_STREAM') {
       wsSource.clearFaults();
     } else {
-      for (const joint of joints.value) {
-        const defaultEntry = UR5_JOINT_MAPPING.find((m) => m.storeJointName === joint.name);
-        joint.temperature = defaultEntry?.defaultTemperature ?? 35.0;
-        syncAlarmStateForJoint(joint, Date.now());
+      for (let i = 0; i < JOINT_COUNT; i++) {
+        const defaultEntry = UR5_JOINT_MAPPING[i];
+        targetTemperatures[i] = defaultEntry?.defaultTemperature ?? 35.0;
       }
+      flushTypedStateToReactiveJoints(Date.now());
     }
   };
 
@@ -901,12 +1010,18 @@ export const useRobotStore = defineStore('robot', () => {
   };
 
   return {
-    // state
+    // state & zero-GC typed buffers
+    targetAngles,
+    targetVelocities,
+    targetEfforts,
+    targetTemperatures,
     joints,
     connectionStatus,
     dataSourceMode,
     motionMode,
     wsServerRunning,
+    stress100HzEnabled,
+    stressFrameCount,
     modelName,
     modelMode,
     modelLoadError,
@@ -991,6 +1106,8 @@ export const useRobotStore = defineStore('robot', () => {
     resetSceneObjects,
     applyTelemetryFrame,
     switchDataSource,
+    setStress100Hz,
+    toggleStress100Hz,
     setServerMotionMode,
     injectOverTemp,
     clearFaults,

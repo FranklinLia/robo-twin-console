@@ -73,6 +73,24 @@ export function applyJointsToUrdf(robot: URDFRobot, joints: JointState[]): void 
 }
 
 /**
+ * 零 GC 驱动入口：使用定长类型化数组与复用缓存对象同步到 URDFRobot
+ */
+export function applyJointArrayToUrdf(
+  robot: URDFRobot,
+  angles: ArrayLike<number>,
+  orderedUrdfJoints: readonly string[],
+  scratchValues: Record<string, number>
+): void {
+  for (let i = 0; i < orderedUrdfJoints.length; i++) {
+    const urdfName = orderedUrdfJoints[i];
+    if (robot.joints[urdfName]) {
+      scratchValues[urdfName] = angles[i] ?? 0;
+    }
+  }
+  robot.setJointValues(scratchValues);
+}
+
+/**
  * 根据射线击中的 Mesh 向上回溯所属 URDFLink 与 driving URDFJoint
  */
 export function resolvePickedUrdfObject(hitObject: THREE.Object3D): PickedObjectMatch | null {
